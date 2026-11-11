@@ -17,6 +17,7 @@ jobs:
         id: build-app
         with:
           sdk-channel: release
+          app-dir: Flipper
 
       - name: Upload .fap
         uses: actions/upload-artifact@v4
