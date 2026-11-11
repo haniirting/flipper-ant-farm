@@ -1,0 +1,8 @@
+App(
+    appid="ant_farm",
+    name="Ant Farm",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="ant_main",
+    stack_size=2 * 1024,
+    fap_category="Games",
+)
