@@ -3,6 +3,8 @@
 #include <input/input.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <storage/storage.h>
 
 #define MAXA 30 // сколько муравьев рисуем на экране
 #define MAXB 12 // яйца + личинки одновременно
@@ -162,6 +164,87 @@ static void move_ants(S* s) {
     }
 }
 
+#define SAVE_DIR "/ext/apps_data/ant_farm"
+#define SAVE_PATH SAVE_DIR "/save.bin"
+#define SAVE_MAGIC 0x41465231
+
+typedef struct {
+    int x, y;
+    uint8_t stage;
+    uint32_t age; // сколько мс прошло с начала стадии
+} SaveBrood;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t ants;
+    int food, happy;
+    SaveBrood b[MAXB];
+    Trash t[MAXT];
+} SaveData;
+
+static void save_game(S* s, uint32_t now) {
+    SaveData* d = malloc(sizeof(SaveData));
+    memset(d, 0, sizeof(SaveData));
+    d->magic = SAVE_MAGIC;
+    d->ants = s->ants;
+    d->food = s->food;
+    d->happy = s->happy;
+    for(int i = 0; i < MAXB; i++) {
+        d->b[i].x = s->b[i].x;
+        d->b[i].y = s->b[i].y;
+        d->b[i].stage = s->b[i].stage;
+        d->b[i].age = now - s->b[i].born;
+    }
+    for(int i = 0; i < MAXT; i++) d->t[i] = s->t[i];
+
+    Storage* st = furi_record_open(RECORD_STORAGE);
+    storage_simply_mkdir(st, "/ext/apps_data");
+    storage_simply_mkdir(st, SAVE_DIR);
+    File* f = storage_file_alloc(st);
+    if(storage_file_open(f, SAVE_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        storage_file_write(f, d, sizeof(SaveData));
+    }
+    storage_file_close(f);
+    storage_file_free(f);
+    furi_record_close(RECORD_STORAGE);
+    free(d);
+}
+
+static bool load_game(S* s, uint32_t now) {
+    bool ok = false;
+    SaveData* d = malloc(sizeof(SaveData));
+    Storage* st = furi_record_open(RECORD_STORAGE);
+    File* f = storage_file_alloc(st);
+    if(storage_file_open(f, SAVE_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        if(storage_file_read(f, d, sizeof(SaveData)) == sizeof(SaveData) &&
+           d->magic == SAVE_MAGIC)
+            ok = true;
+    }
+    storage_file_close(f);
+    storage_file_free(f);
+    furi_record_close(RECORD_STORAGE);
+
+    if(ok) {
+        s->ants = d->ants > MAXANTS ? MAXANTS : d->ants;
+        if(s->ants < 2) s->ants = 2;
+        s->food = clampi(d->food, 0, 100);
+        s->happy = clampi(d->happy, 0, 100);
+        for(int i = 0; i < MAXB; i++) {
+            s->b[i].stage = d->b[i].stage > 2 ? 0 : d->b[i].stage;
+            s->b[i].x = clampi(d->b[i].x, X0 + 2, X1 - 2);
+            s->b[i].y = clampi(d->b[i].y, Y0 + 2, Y1 - 2);
+            s->b[i].born = now - d->b[i].age;
+        }
+        for(int i = 0; i < MAXT; i++) {
+            s->t[i].on = d->t[i].on;
+            s->t[i].x = clampi(d->t[i].x, X0 + 2, X1 - 4);
+            s->t[i].y = clampi(d->t[i].y, Y0 + 2, Y1 - 4);
+        }
+    }
+    free(d);
+    return ok;
+}
+
 static void draw(Canvas* c, void* ctx) {
     S* s = ctx;
     char buf[32];
@@ -227,6 +310,7 @@ int32_t ant_main(void* p) {
     s->food = 60;
     s->happy = 60;
     s->last_lay = s->last_hunger = s->last_trash = s->last_starve = now;
+    load_game(s, now); // загрузить прогресс, если он есть
     sync_shown(s);
 
     FuriMessageQueue* q = furi_message_queue_alloc(8, sizeof(InputEvent));
@@ -239,6 +323,7 @@ int32_t ant_main(void* p) {
     InputEvent e;
     uint32_t last_move = now;
     uint32_t last_tick = now;
+    uint32_t last_save = now;
     bool run = true;
 
     while(run) {
@@ -256,6 +341,10 @@ int32_t ant_main(void* p) {
             last_tick = now;
             update_game(s, now);
         }
+        if(now - last_save >= 10000) { // автосохранение раз в 10 секунд
+            last_save = now;
+            save_game(s, now);
+        }
         if(now - last_move >= 100) {
             last_move = now;
             move_ants(s);
@@ -263,6 +352,7 @@ int32_t ant_main(void* p) {
         }
     }
 
+    save_game(s, furi_get_tick()); // сохранить при выходе
     gui_remove_view_port(gui, vp);
     furi_record_close(RECORD_GUI);
     view_port_free(vp);
